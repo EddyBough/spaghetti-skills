@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import os
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -18,12 +19,21 @@ STOPWORDS = {
     "skill", "agent", "agents",
 }
 
+DEFAULT_PROJECT_DIRS = (".agents/skills", ".codex/skills", ".claude/skills", ".cursor/skills")
+DEFAULT_GLOBAL_DIRS = (
+    "~/.agents/skills",
+    "${CODEX_HOME:-$HOME/.codex}/skills",
+    "~/.claude/skills",
+    "~/.cursor/skills",
+)
+
 
 @dataclass(frozen=True)
 class Skill:
     name: str
     description: str
     path: str
+    source: str
     terms: tuple[str, ...]
 
 
@@ -64,22 +74,82 @@ def tokenize(text: str) -> tuple[str, ...]:
     return tuple(sorted({t for t in tokens if len(t) > 2 and t not in STOPWORDS}))
 
 
-def discover(root: Path) -> list[Skill]:
+def expand_default_path(raw: str) -> Path:
+    if raw.startswith("${CODEX_HOME:-"):
+        codex_home = os.environ.get("CODEX_HOME")
+        base = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+        return base / "skills"
+    return Path(os.path.expandvars(raw)).expanduser()
+
+
+def source_roots(project_root: Path, extra_sources: Iterable[str], include_global: bool) -> list[tuple[str, Path]]:
+    roots: list[tuple[str, Path]] = [("project", project_root)]
+
+    for rel in DEFAULT_PROJECT_DIRS:
+        path = project_root / rel
+        if path.exists():
+            roots.append((f"project:{rel}", path))
+
+    if include_global:
+        for raw in DEFAULT_GLOBAL_DIRS:
+            path = expand_default_path(raw)
+            if path.exists():
+                roots.append((f"global:{path}", path))
+
+    for raw in extra_sources:
+        path = Path(os.path.expandvars(raw)).expanduser().resolve()
+        if path.exists():
+            roots.append((f"extra:{path}", path))
+
+    seen: set[str] = set()
+    unique: list[tuple[str, Path]] = []
+    for label, path in roots:
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            continue
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append((label, Path(resolved)))
+    return unique
+
+
+def discover_in(root: Path, source: str, excluded: set[str]) -> list[Skill]:
     skills: list[Skill] = []
-    this_skill = (root / "SKILL.md").resolve()
+    if not root.exists():
+        return skills
+
     for path in sorted(root.rglob("SKILL.md")):
         try:
-            if path.resolve() == this_skill:
+            resolved = str(path.resolve())
+            if resolved in excluded:
                 continue
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
+
         name, description = parse_frontmatter(text)
         if not name:
             name = path.parent.name
         terms = tokenize(f"{name} {description}")
-        skills.append(Skill(name=name, description=description, path=str(path), terms=terms))
+        skills.append(
+            Skill(
+                name=name,
+                description=description,
+                path=resolved,
+                source=source,
+                terms=terms,
+            )
+        )
     return skills
+
+
+def discover(roots: list[tuple[str, Path]], excluded: set[str]) -> list[Skill]:
+    by_path: dict[str, Skill] = {}
+    for source, root in roots:
+        for skill in discover_in(root, source, excluded):
+            by_path.setdefault(skill.path, skill)
+    return sorted(by_path.values(), key=lambda s: (s.name.lower(), s.path))
 
 
 def similarity(a: Skill, b: Skill) -> float:
@@ -103,6 +173,8 @@ def candidate_pairs(skills: list[Skill], all_pairs_limit: int, threshold: float)
                 "skill_b": b.name,
                 "path_a": a.path,
                 "path_b": b.path,
+                "source_a": a.source,
+                "source_b": b.source,
                 "shared_terms": shared,
                 "lexical_similarity": round(score, 4),
                 "selection_reason": "all-pairs-small-set" if keep_all else "routing-metadata-overlap",
@@ -112,18 +184,27 @@ def candidate_pairs(skills: list[Skill], all_pairs_limit: int, threshold: float)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Discover Agent Skills and select pairs for semantic review.")
-    parser.add_argument("--root", default=".", help="Directory to scan (default: current directory)")
+    parser.add_argument("--root", default=".", help="Project directory to scan (default: current directory)")
+    parser.add_argument("--source", action="append", default=[], help="Additional skill directory to scan; repeatable")
+    parser.add_argument("--no-global", action="store_true", help="Do not scan known global skill directories")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     parser.add_argument("--all-pairs-limit", type=int, default=15, help="Keep all pairs when <= N skills")
     parser.add_argument("--threshold", type=float, default=0.08, help="Lexical Jaccard threshold for larger sets")
     args = parser.parse_args()
 
-    root = Path(args.root).expanduser().resolve()
-    skills = discover(root)
+    project_root = Path(args.root).expanduser().resolve()
+    roots = source_roots(project_root, args.source, include_global=not args.no_global)
+
+    self_skill = Path(__file__).resolve().parent.parent / "SKILL.md"
+    excluded = {str(self_skill.resolve())}
+
+    skills = discover(roots, excluded)
     pairs = candidate_pairs(skills, args.all_pairs_limit, args.threshold)
+
     result = {
-        "root": str(root),
+        "project_root": str(project_root),
         "read_only": True,
+        "sources_scanned": [{"label": label, "path": str(path)} for label, path in roots],
         "skills_found": len(skills),
         "skills": [asdict(s) for s in skills],
         "candidate_pairs": pairs,
