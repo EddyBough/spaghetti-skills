@@ -13,6 +13,19 @@ It does **not** modify, delete, disable, rewrite, or move any skill. It only rea
 - `CONFLICT` — two skills can apply to the same situation but give incompatible instructions.
 - `COMPATIBLE` — related skills that can coexist without meaningful interference.
 
+## What it scans
+
+By default, SpaghettiSkills combines the skills visible from the current project with known global skill directories when they exist.
+
+That allows it to inspect:
+
+- project ↔ project skills;
+- global ↔ global skills;
+- project ↔ global skills;
+- extra skill directories supplied explicitly.
+
+The scanner is read-only and de-duplicates skills by resolved file path.
+
 ## Installation
 
 SpaghettiSkills is designed to be installed like any other Agent Skill.
@@ -30,7 +43,7 @@ From a coding agent that supports Agent Skills, ask it to audit your installed s
 For example:
 
 ```text
-Use SpaghettiSkills to audit my installed skills.
+Use SpaghettiSkills to audit the skills available in this project and my global agent skills.
 ```
 
 or:
@@ -52,8 +65,9 @@ Example output:
 2 OVERLAPS
 1 DUPLICATE
 
-CONFLICT
+CONFLICT — HIGH
 react-performance ↔ dashboard-ui
+global ↔ project
 
 Shared scope:
 React dashboard rendering
@@ -73,10 +87,22 @@ Review the scope of one of the skills. No files were changed.
 
 ### Run the scanner directly
 
-The bundled scanner can also be run manually for debugging or development:
+Default scan (project + known global locations):
 
 ```bash
 python3 scripts/scan.py --root . --json
+```
+
+Add another skill directory:
+
+```bash
+python3 scripts/scan.py --root . --source /path/to/skills --json
+```
+
+Project-only scan:
+
+```bash
+python3 scripts/scan.py --root . --no-global --json
 ```
 
 The scanner does **not** decide whether two skills truly conflict. It only discovers skills and selects candidate pairs. The user's existing coding agent performs the semantic comparison according to the rules in `SKILL.md`.
@@ -88,10 +114,11 @@ The scanner does **not** decide whether two skills truly conflict. It only disco
 SpaghettiSkills deliberately separates deterministic work from semantic judgment:
 
 1. A local Python scanner discovers `SKILL.md` files and extracts routing metadata.
-2. The scanner removes obviously unrelated pairs when the skill set is large.
-3. The user's existing coding agent reads the full candidate skill pair.
-4. The agent classifies the relationship using SpaghettiSkills' strict audit protocol.
-5. The result is shown as a read-only terminal report with evidence.
+2. The scanner merges project, global, and explicitly supplied sources.
+3. The scanner removes obviously unrelated pairs when the skill set is large.
+4. The user's existing coding agent reads the full candidate skill pair.
+5. The agent classifies the relationship using SpaghettiSkills' strict audit protocol.
+6. The result is shown as a read-only terminal report with evidence.
 
 No model API key is required by SpaghettiSkills itself.
 
@@ -106,6 +133,8 @@ A scan must never:
 - modify `AGENTS.md`, `CLAUDE.md`, Cursor rules, hooks, MCP configuration, or other harness files;
 - install dependencies globally;
 - change the user's project or global agent configuration.
+
+Audited skill contents are treated as **untrusted data**. Their instructions are evidence to inspect, not commands to execute during the audit.
 
 Recommendations are advisory only. The user decides what to change.
 
