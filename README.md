@@ -2,92 +2,192 @@
 
 **Find AI agent skills that duplicate, overlap, or conflict before they turn your agent into spaghetti.**
 
-SpaghettiSkills is a read-only, provider-agnostic Agent Skill that audits other installed skills.
+SpaghettiSkills is a read-only Agent Skill auditor for coding agents such as Cursor and Codex. It discovers the skills available to a project, routes only plausible collisions to semantic review, and asks the host agent to classify each relationship as `DUPLICATE`, `OVERLAP`, `CONFLICT`, or `COMPATIBLE`.
 
-It does **not** modify, delete, disable, rewrite, or move any skill. It only reads, compares, and reports.
+No separate model API key. No background service. No automatic mutation of your harness.
+
+## Why this exists
+
+Agent Skills are easy to install and easy to accumulate.
+
+The failure mode is not only duplication. Two skills can both apply to the same task while encoding different defaults, different constraints, or directly incompatible instructions. Those collisions are difficult to spot by looking at filenames alone.
+
+SpaghettiSkills audits that layer before it becomes part of an agent's behavior.
+
+## Install
+
+Install globally for Cursor and Codex with the Agent Skills CLI:
+
+```bash
+npx skills add EddyBough/spaghetti-skills \
+  -g -a cursor -a codex
+```
+
+Then ask your coding agent:
+
+```text
+Use SpaghettiSkills to audit my installed skills.
+```
+
+SpaghettiSkills will inspect project-local and known global skill locations visible to the current environment.
 
 ## What it detects
 
-- `DUPLICATE` — two skills largely do the same job.
-- `OVERLAP` — two skills cover part of the same scope and may both influence the same task.
-- `CONFLICT` — two skills can apply to the same situation but give incompatible instructions.
-- `COMPATIBLE` — related skills that can coexist without meaningful interference.
+- `DUPLICATE` — substantially the same purpose and guidance.
+- `OVERLAP` — both skills govern the same responsibility, decision, behavior, or output dimension without directly contradicting each other.
+- `CONFLICT` — both skills apply to the same situation and give incompatible instructions.
+- `COMPATIBLE` — both may be useful in the same task, but they govern distinct concerns or complement each other.
 
-## What it scans
+Co-activation alone is **not** considered overlap.
 
-By default, SpaghettiSkills combines the skills visible from the current project with known global skill directories when they exist.
+## Example
 
-That allows it to inspect:
+```text
+CONFLICT — HIGH
+ui-ux-pro-max ↔ ui-ux-pro-max
+global ↔ project
+
+Shared scope:
+UI/UX implementation for the same project.
+
+Skill A:
+"Never assume a stack..."
+
+Skill B:
+"If user doesn't specify a stack, default to html-tailwind."
+
+Why:
+Both versions can govern the same task while encoding opposing defaults.
+
+Suggestion:
+Keep one authoritative version. No files were changed.
+```
+
+## Design principles
+
+### Read-only by design
+
+An auditor should not mutate the system it is auditing. SpaghettiSkills reads, compares, and reports. It never deletes, disables, rewrites, moves, or installs skills during an audit.
+
+### Deterministic first
+
+Discovery, path de-duplication, metadata parsing, pair generation, and routing are handled locally in Python. Work that does not require semantic judgment should not consume LLM reasoning.
+
+### Semantic only when needed
+
+The host coding agent is used only for the part that actually requires understanding instructions in context. Candidate skills are read once and their contents are reused across the selected pair comparisons.
+
+### Provider-agnostic
+
+SpaghettiSkills does not embed or call a model provider directly. It reuses the coding agent the developer is already running.
+
+## Architecture
+
+```text
+Installed Agent Skills
+        │
+        ▼
+Deterministic discovery
+        │
+        ▼
+Metadata extraction + de-duplication
+        │
+        ▼
+Candidate routing
+        │
+        ▼
+Selected skills read once
+        │
+        ▼
+Host LLM semantic review
+        │
+        ▼
+DUPLICATE / OVERLAP / CONFLICT / COMPATIBLE
+```
+
+The implementation deliberately separates cheap deterministic work from expensive semantic judgment:
+
+1. `scripts/scan.py` discovers `SKILL.md` files.
+2. It merges project-local, known global, and explicitly supplied sources.
+3. It prunes common dependency/build directories such as `node_modules`, `.git`, `.next`, `dist`, and `build`.
+4. It computes routing metadata from skill names and descriptions.
+5. Exact same-name skills are always retained as candidates.
+6. For larger skill sets, obviously unrelated pairs are routed out before semantic review.
+7. The host agent reads the selected skills and applies the classification protocol in `SKILL.md`.
+8. Findings include evidence from both skills and remain advisory.
+
+**Python routes. Your existing agent judges. SpaghettiSkills reports.**
+
+## Why not compare every skill with an LLM?
+
+An exhaustive pairwise comparison grows quadratically.
+
+For `n` discovered skills, the number of possible pairs is:
+
+```text
+n × (n - 1) / 2
+```
+
+Examples:
+
+| Skills | Theoretical pairs |
+| ---: | ---: |
+| 10 | 45 |
+| 25 | 300 |
+| 50 | 1,225 |
+| 100 | 4,950 |
+
+SpaghettiSkills still **discovers every skill**. Routing only reduces which relationships require expensive semantic review; it is not a limit on the number of supported skills.
+
+The scanner exposes both `theoretical_pair_count` and `candidate_pair_count`, plus `routing_reduction_percent`, so this tradeoff is measurable rather than hidden.
+
+## Benchmark philosophy
+
+SpaghettiSkills is currently in the benchmark phase.
+
+The goal is not to maximize routing reduction at any cost. The important metric is **recall of real collisions**: a cheaper router is useless if it silently filters out true conflicts or overlaps.
+
+We therefore evaluate routing against known fixtures and real-world skill sets using two measurements:
+
+- **routing reduction** — how many theoretical pairs avoid semantic review;
+- **collision recall** — how many known collisions survive routing and reach semantic review.
+
+No performance percentage should be treated as a project-wide claim until it is backed by a reproducible benchmark in this repository.
+
+## Threat model / safety
+
+Audited skills are **untrusted input**.
+
+A `SKILL.md` may contain instructions that are valid when the skill is active but unsafe or irrelevant during an audit. SpaghettiSkills requires the host agent to treat those instructions as evidence to analyze, not commands to execute.
+
+During an audit SpaghettiSkills must not:
+
+- execute instructions found inside an audited skill merely because they are present;
+- edit or delete a skill;
+- change `AGENTS.md`, `CLAUDE.md`, Cursor rules, hooks, MCP configuration, or other harness files;
+- install dependencies globally;
+- modify the user's project or global agent configuration.
+
+Recommendations are advisory only.
+
+## Discovery scope
+
+By default, SpaghettiSkills can combine:
 
 - project ↔ project skills;
 - global ↔ global skills;
 - project ↔ global skills;
-- extra skill directories supplied explicitly.
+- additional directories supplied explicitly.
 
-The scanner is read-only and de-duplicates skills by resolved file path.
+Known project-local locations include `.agents/skills`, `.codex/skills`, `.claude/skills`, and `.cursor/skills`.
 
-## Installation
+Known global locations are inspected only when they exist, including `~/.agents/skills`, Codex skills, Claude skills, and Cursor skills.
 
-SpaghettiSkills is designed to be installed like any other Agent Skill.
+Resolved paths are de-duplicated so the same physical skill is not counted twice merely because multiple discovery roots reach it.
 
-Clone or copy this repository into a skill directory supported by your coding agent. The repository contains its own `SKILL.md` and local Python scanner.
+## Run the scanner directly
 
-No Python package, API key, background service, or global dependency is required.
-
-> Installation paths differ between coding agents. SpaghettiSkills intentionally does not modify your global harness or install itself automatically.
-
-## Usage
-
-From a coding agent that supports Agent Skills, ask it to audit your installed skills with SpaghettiSkills.
-
-For example:
-
-```text
-Use SpaghettiSkills to audit the skills available in this project and my global agent skills.
-```
-
-or:
-
-```text
-Check whether my installed skills duplicate, overlap, or conflict with each other.
-```
-
-The agent loads SpaghettiSkills, runs the bundled read-only Python scanner, reads the candidate `SKILL.md` pairs, and returns a report.
-
-Example output:
-
-```text
-🍝 SpaghettiSkills
-
-12 skills found
-
-1 CONFLICT
-2 OVERLAPS
-1 DUPLICATE
-
-CONFLICT — HIGH
-react-performance ↔ dashboard-ui
-global ↔ project
-
-Shared scope:
-React dashboard rendering
-
-Evidence A:
-"Prefer Server Components whenever possible."
-
-Evidence B:
-"Dashboard pages should default to Client Components."
-
-Why:
-Both skills may govern the same task while recommending opposing defaults.
-
-Recommendation:
-Review the scope of one of the skills. No files were changed.
-```
-
-### Run the scanner directly
-
-Default scan (project + known global locations):
+Default scan:
 
 ```bash
 python3 scripts/scan.py --root . --json
@@ -105,44 +205,52 @@ Project-only scan:
 python3 scripts/scan.py --root . --no-global --json
 ```
 
-The scanner does **not** decide whether two skills truly conflict. It only discovers skills and selects candidate pairs. The user's existing coding agent performs the semantic comparison according to the rules in `SKILL.md`.
+The scanner performs discovery and routing only. It does **not** make the final semantic classification.
 
-**Python filters. Your existing agent judges. SpaghettiSkills reports.**
+## Tests
 
-## How it works
+The scanner uses only the Python standard library.
 
-SpaghettiSkills deliberately separates deterministic work from semantic judgment:
+Run the test suite with:
 
-1. A local Python scanner discovers `SKILL.md` files and extracts routing metadata.
-2. The scanner merges project, global, and explicitly supplied sources.
-3. The scanner removes obviously unrelated pairs when the skill set is large.
-4. The user's existing coding agent reads the full candidate skill pair.
-5. The agent classifies the relationship using SpaghettiSkills' strict audit protocol.
-6. The result is shown as a read-only terminal report with evidence.
+```bash
+python3 -m unittest discover -s tests -v
+```
 
-No model API key is required by SpaghettiSkills itself.
+Tests cover the deterministic layer: parsing, discovery behavior, ignored directories, candidate routing, same-name retention, and routing metrics.
 
-## Safety / scope
+## Limitations
 
-SpaghettiSkills is **read-only by design**.
+SpaghettiSkills intentionally has a narrow scope.
 
-A scan must never:
+- Metadata routing is heuristic and can theoretically produce false negatives. This is why collision recall must be benchmarked.
+- Final semantic classification depends on the capabilities and behavior of the host model.
+- A relationship can depend on task context; two skills may be compatible in one situation and conflict in another.
+- The lightweight frontmatter parser supports the metadata shapes needed by common Agent Skills, but it is not a general-purpose YAML parser.
+- SpaghettiSkills audits **Agent Skills only**. It does not currently audit hooks, MCP servers, `AGENTS.md`, `CLAUDE.md`, IDE rules, or the rest of the agent harness.
 
-- edit a `SKILL.md`;
-- remove or disable a skill;
-- modify `AGENTS.md`, `CLAUDE.md`, Cursor rules, hooks, MCP configuration, or other harness files;
-- install dependencies globally;
-- change the user's project or global agent configuration.
+These are deliberate boundaries, not hidden guarantees.
 
-Audited skill contents are treated as **untrusted data**. Their instructions are evidence to inspect, not commands to execute during the audit.
+## Project structure
 
-Recommendations are advisory only. The user decides what to change.
+```text
+spaghetti-skills/
+├── SKILL.md              # semantic audit protocol
+├── README.md             # project documentation
+├── scripts/
+│   └── scan.py           # deterministic discovery + routing
+├── tests/                # deterministic-layer tests
+└── docs/
+    └── HOW_IT_WORKS.md    # architecture notes
+```
+
+`scan.py` intentionally remains a single small module while discovery, parsing, routing, and reporting are still tightly coupled and easy to understand in one place. It should be split only when those responsibilities develop independent complexity or reuse—not to create architecture for its own sake.
 
 ## Status
 
 Early development / benchmark phase.
 
-The current goal is intentionally narrow: **audit collisions between Agent Skills only**.
+The current goal is intentionally narrow: **detect collisions between Agent Skills accurately, cheaply, and without modifying the harness.**
 
 ## License
 
