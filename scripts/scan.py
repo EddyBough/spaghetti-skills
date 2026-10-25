@@ -31,33 +31,6 @@ IGNORED_DIR_NAMES = {
     "dist", "node_modules", "out", "vendor", "venv",
 }
 
-# Conservative routing domains. These are not classifications; they only prevent
-# plausible semantic collisions from being discarded before LLM review.
-ROUTING_DOMAINS: dict[str, frozenset[str]] = {
-    "frontend-ui": frozenset({
-        "a11y", "accessibility", "component", "components", "design", "frontend",
-        "interface", "layout", "palette", "style", "styles", "typography", "ui",
-        "ux", "visual", "web",
-    }),
-    "react": frozenset({
-        "bundle", "client-components", "next", "next.js", "nextjs", "react", "rerender",
-        "rerenders", "rsc", "server-components", "suspense", "waterfall", "waterfalls",
-    }),
-    "security": frozenset({
-        "auth", "csrf", "injection", "jwt", "oauth", "security", "ssrf", "threat",
-        "trust", "vulnerability", "vulnerabilities", "xss",
-    }),
-    "code-review": frozenset({
-        "audit", "defect", "defects", "finding", "findings", "review", "reviewing",
-    }),
-    "documentation": frozenset({
-        "docs", "documentation", "reference", "references",
-    }),
-    "image": frozenset({
-        "image", "images", "illustration", "photo", "visuals",
-    }),
-}
-
 
 @dataclass(frozen=True)
 class Skill:
@@ -200,18 +173,6 @@ def similarity(a: Skill, b: Skill) -> float:
     return intersection / union if union else 0.0
 
 
-def normalized_name(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-
-
-def routing_domains(skill: Skill) -> tuple[str, ...]:
-    terms = set(skill.terms)
-    return tuple(sorted(
-        domain for domain, indicators in ROUTING_DOMAINS.items()
-        if terms & indicators
-    ))
-
-
 def candidate_pairs(skills: list[Skill], all_pairs_limit: int, threshold: float) -> list[dict]:
     pairs: list[dict] = []
     keep_all = len(skills) <= all_pairs_limit
@@ -219,17 +180,11 @@ def candidate_pairs(skills: list[Skill], all_pairs_limit: int, threshold: float)
     for a, b in itertools.combinations(skills, 2):
         shared = sorted(set(a.terms) & set(b.terms))
         score = similarity(a, b)
-        same_name = normalized_name(a.name) == normalized_name(b.name)
-        shared_domains = sorted(set(routing_domains(a)) & set(routing_domains(b)))
 
         if keep_all:
             reason = "all-pairs-small-set"
-        elif same_name:
-            reason = "same-skill-name"
-        elif shared_domains:
-            reason = "shared-routing-domain"
-        elif score >= threshold:
-            reason = "routing-metadata-similarity"
+        elif shared or score >= threshold:
+            reason = "routing-metadata-overlap"
         else:
             continue
 
@@ -241,7 +196,6 @@ def candidate_pairs(skills: list[Skill], all_pairs_limit: int, threshold: float)
             "source_a": a.source,
             "source_b": b.source,
             "shared_terms": shared,
-            "shared_routing_domains": shared_domains,
             "lexical_similarity": round(score, 4),
             "selection_reason": reason,
         })
@@ -264,7 +218,7 @@ def main() -> None:
     parser.add_argument("--source", action="append", default=[], help="Additional skill directory to scan; repeatable")
     parser.add_argument("--no-global", action="store_true", help="Do not scan known global skill directories")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    parser.add_argument("--all-pairs-limit", type=int, default=6, help="Keep all pairs when <= N skills")
+    parser.add_argument("--all-pairs-limit", type=int, default=15, help="Keep all pairs when <= N skills")
     parser.add_argument("--threshold", type=float, default=0.08, help="Metadata Jaccard threshold for larger sets")
     args = parser.parse_args()
 
@@ -289,7 +243,7 @@ def main() -> None:
         "skills_requiring_semantic_read": len(paths_to_read),
         "semantic_read_paths": paths_to_read,
         "candidate_pairs": pairs,
-        "note": "Routing only. Read each semantic candidate skill once, then classify candidate pairs using SKILL.md.",
+        "note": "For small skill sets, all pairs are preserved for semantic review. Read each selected skill once, then classify candidate pairs using SKILL.md.",
     }
 
     if args.json:
@@ -301,9 +255,8 @@ def main() -> None:
             f"({metrics['routing_reduction_percent']}% routed out)"
         )
         for p in pairs:
-            routing_hint = ", ".join(p["shared_routing_domains"] or p["shared_terms"][:6])
-            routing_hint = routing_hint or p["selection_reason"]
-            print(f"- {p['skill_a']} ↔ {p['skill_b']}  [{routing_hint}]")
+            shared = ", ".join(p["shared_terms"][:6]) or p["selection_reason"]
+            print(f"- {p['skill_a']} ↔ {p['skill_b']}  [{shared}]")
 
 
 if __name__ == "__main__":
