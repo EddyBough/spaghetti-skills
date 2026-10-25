@@ -10,7 +10,7 @@ import os
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in",
@@ -26,6 +26,10 @@ DEFAULT_GLOBAL_DIRS = (
     "~/.claude/skills",
     "~/.cursor/skills",
 )
+IGNORED_DIR_NAMES = {
+    ".git", ".next", ".turbo", ".venv", "__pycache__", "build", "coverage",
+    "dist", "node_modules", "out", "vendor", "venv",
+}
 
 
 @dataclass(frozen=True)
@@ -114,12 +118,20 @@ def source_roots(project_root: Path, extra_sources: Iterable[str], include_globa
     return unique
 
 
+def iter_skill_files(root: Path) -> Iterator[Path]:
+    """Yield SKILL.md files while pruning common dependency/build directories."""
+    for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIR_NAMES)
+        if "SKILL.md" in files:
+            yield Path(current) / "SKILL.md"
+
+
 def discover_in(root: Path, source: str, excluded: set[str]) -> list[Skill]:
     skills: list[Skill] = []
     if not root.exists():
         return skills
 
-    for path in sorted(root.rglob("SKILL.md")):
+    for path in sorted(iter_skill_files(root)):
         try:
             resolved = str(path.resolve())
             if resolved in excluded:
@@ -161,25 +173,50 @@ def similarity(a: Skill, b: Skill) -> float:
     return intersection / union if union else 0.0
 
 
+def normalized_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 def candidate_pairs(skills: list[Skill], all_pairs_limit: int, threshold: float) -> list[dict]:
-    pairs = []
+    pairs: list[dict] = []
     keep_all = len(skills) <= all_pairs_limit
+
     for a, b in itertools.combinations(skills, 2):
         shared = sorted(set(a.terms) & set(b.terms))
         score = similarity(a, b)
-        if keep_all or shared or score >= threshold:
-            pairs.append({
-                "skill_a": a.name,
-                "skill_b": b.name,
-                "path_a": a.path,
-                "path_b": b.path,
-                "source_a": a.source,
-                "source_b": b.source,
-                "shared_terms": shared,
-                "lexical_similarity": round(score, 4),
-                "selection_reason": "all-pairs-small-set" if keep_all else "routing-metadata-overlap",
-            })
+        same_name = normalized_name(a.name) == normalized_name(b.name)
+
+        if keep_all:
+            reason = "all-pairs-small-set"
+        elif same_name:
+            reason = "same-skill-name"
+        elif score >= threshold:
+            reason = "routing-metadata-similarity"
+        else:
+            continue
+
+        pairs.append({
+            "skill_a": a.name,
+            "skill_b": b.name,
+            "path_a": a.path,
+            "path_b": b.path,
+            "source_a": a.source,
+            "source_b": b.source,
+            "shared_terms": shared,
+            "lexical_similarity": round(score, 4),
+            "selection_reason": reason,
+        })
     return pairs
+
+
+def pair_metrics(skill_count: int, candidate_count: int) -> dict[str, float | int]:
+    theoretical = skill_count * (skill_count - 1) // 2
+    reduction = 0.0 if theoretical == 0 else (1 - candidate_count / theoretical) * 100
+    return {
+        "theoretical_pair_count": theoretical,
+        "candidate_pair_count": candidate_count,
+        "routing_reduction_percent": round(reduction, 1),
+    }
 
 
 def main() -> None:
@@ -188,8 +225,8 @@ def main() -> None:
     parser.add_argument("--source", action="append", default=[], help="Additional skill directory to scan; repeatable")
     parser.add_argument("--no-global", action="store_true", help="Do not scan known global skill directories")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    parser.add_argument("--all-pairs-limit", type=int, default=15, help="Keep all pairs when <= N skills")
-    parser.add_argument("--threshold", type=float, default=0.08, help="Lexical Jaccard threshold for larger sets")
+    parser.add_argument("--all-pairs-limit", type=int, default=6, help="Keep all pairs when <= N skills")
+    parser.add_argument("--threshold", type=float, default=0.08, help="Metadata Jaccard threshold for larger sets")
     args = parser.parse_args()
 
     project_root = Path(args.root).expanduser().resolve()
@@ -200,6 +237,8 @@ def main() -> None:
 
     skills = discover(roots, excluded)
     pairs = candidate_pairs(skills, args.all_pairs_limit, args.threshold)
+    metrics = pair_metrics(len(skills), len(pairs))
+    paths_to_read = sorted({p["path_a"] for p in pairs} | {p["path_b"] for p in pairs})
 
     result = {
         "project_root": str(project_root),
@@ -207,17 +246,23 @@ def main() -> None:
         "sources_scanned": [{"label": label, "path": str(path)} for label, path in roots],
         "skills_found": len(skills),
         "skills": [asdict(s) for s in skills],
+        **metrics,
+        "skills_requiring_semantic_read": len(paths_to_read),
+        "semantic_read_paths": paths_to_read,
         "candidate_pairs": pairs,
-        "candidate_pair_count": len(pairs),
-        "note": "Candidate selection only. Semantic classification must be performed by the active agent using SKILL.md.",
+        "note": "Routing only. Read each semantic candidate skill once, then classify candidate pairs using SKILL.md.",
     }
 
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        print(f"SpaghettiSkills scanner — {len(skills)} skills, {len(pairs)} candidate pairs")
+        print(
+            "SpaghettiSkills scanner — "
+            f"{len(skills)} skills, {len(pairs)}/{metrics['theoretical_pair_count']} candidate pairs "
+            f"({metrics['routing_reduction_percent']}% routed out)"
+        )
         for p in pairs:
-            shared = ", ".join(p["shared_terms"][:6]) or "all-pairs mode"
+            shared = ", ".join(p["shared_terms"][:6]) or p["selection_reason"]
             print(f"- {p['skill_a']} ↔ {p['skill_b']}  [{shared}]")
 
 
