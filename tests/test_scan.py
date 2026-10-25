@@ -56,7 +56,40 @@ class ScanTests(unittest.TestCase):
         b = self.skill("react-performance", "react performance waterfalls bundle", "/b")
         pairs = scan.candidate_pairs([a, b], all_pairs_limit=0, threshold=0.08)
         self.assertEqual(len(pairs), 1)
-        self.assertEqual(pairs[0]["selection_reason"], "routing-metadata-similarity")
+        self.assertIn(
+            pairs[0]["selection_reason"],
+            {"shared-routing-domain", "routing-metadata-similarity"},
+        )
+
+    def test_frontend_design_and_ui_ux_are_preserved_by_domain_routing(self):
+        frontend = self.skill(
+            "frontend-design",
+            "Distinctive frontend interfaces with strong visual identity, typography and layout.",
+            "/frontend",
+        )
+        uiux = self.skill(
+            "ui-ux-pro-max",
+            "UI UX design systems, palettes, accessibility, components and web styles.",
+            "/uiux",
+        )
+        pairs = scan.candidate_pairs([frontend, uiux], all_pairs_limit=0, threshold=0.99)
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]["selection_reason"], "shared-routing-domain")
+        self.assertIn("frontend-ui", pairs[0]["shared_routing_domains"])
+
+    def test_distinct_domains_can_still_be_filtered(self):
+        design = self.skill(
+            "frontend-design",
+            "Visual interface typography layout palette",
+            "/design",
+        )
+        security = self.skill(
+            "security-audit",
+            "Authentication CSRF SSRF vulnerability trust boundary",
+            "/security",
+        )
+        pairs = scan.candidate_pairs([design, security], all_pairs_limit=0, threshold=0.99)
+        self.assertEqual(pairs, [])
 
     def test_ignored_directories_are_pruned(self):
         with tempfile.TemporaryDirectory() as tmp:
