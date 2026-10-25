@@ -2,7 +2,7 @@
 
 **Find AI agent skills that duplicate, overlap, or conflict before they turn your agent into spaghetti.**
 
-SpaghettiSkills is a read-only Agent Skill auditor for coding agents such as Cursor and Codex. It discovers the skills available to a project, routes only plausible collisions to semantic review, and asks the host agent to classify each relationship as `DUPLICATE`, `OVERLAP`, `CONFLICT`, or `COMPATIBLE`.
+SpaghettiSkills is a read-only Agent Skill auditor for coding agents such as Cursor and Codex. It discovers the skills available to a project, preserves exhaustive comparison for small skill sets, routes plausible collisions for larger sets, and asks the host agent to classify each relationship as `DUPLICATE`, `OVERLAP`, `CONFLICT`, or `COMPATIBLE`.
 
 No separate model API key. No background service. No automatic mutation of your harness.
 
@@ -13,6 +13,25 @@ Agent Skills are easy to install and easy to accumulate.
 The failure mode is not only duplication. Two skills can both apply to the same task while encoding different defaults, different constraints, or directly incompatible instructions. Those collisions are difficult to spot by looking at filenames alone.
 
 SpaghettiSkills audits that layer before it becomes part of an agent's behavior.
+
+## Focused by design
+
+SpaghettiSkills does not try to audit everything in an agent harness.
+
+It does not inspect MCP servers, lint every configuration file, rewrite agent instructions, manage hooks, or automatically "fix" the environment. Its scope is intentionally narrow: understand how installed Agent Skills interact with each other.
+
+That boundary is deliberate. Compatibility between independently authored skills is already a distinct problem with its own tradeoffs around discovery, semantic judgment, false positives, false negatives, and cost.
+
+SpaghettiSkills prefers depth, explainability, and read-only analysis over becoming an all-purpose agent toolbox.
+
+In short:
+
+```text
+Discover skills
+→ compare them
+→ explain collisions
+→ modify nothing
+```
 
 ## Install
 
@@ -33,17 +52,17 @@ SpaghettiSkills will inspect project-local and known global skill locations visi
 
 ## What it detects
 
-- `DUPLICATE` — substantially the same purpose and guidance.
-- `OVERLAP` — both skills govern the same responsibility, decision, behavior, or output dimension without directly contradicting each other.
-- `CONFLICT` — both skills apply to the same situation and give incompatible instructions.
-- `COMPATIBLE` — both may be useful in the same task, but they govern distinct concerns or complement each other.
+- `DUPLICATE`: substantially the same purpose and guidance.
+- `OVERLAP`: both skills govern the same responsibility, decision, behavior, or output dimension without directly contradicting each other.
+- `CONFLICT`: both skills apply to the same situation and give incompatible instructions.
+- `COMPATIBLE`: both may be useful in the same task, but they govern distinct concerns or complement each other.
 
 Co-activation alone is **not** considered overlap.
 
 ## Example
 
 ```text
-CONFLICT — HIGH
+CONFLICT - HIGH
 ui-ux-pro-max ↔ ui-ux-pro-max
 global ↔ project
 
@@ -110,11 +129,10 @@ The implementation deliberately separates cheap deterministic work from expensiv
 1. `scripts/scan.py` discovers `SKILL.md` files.
 2. It merges project-local, known global, and explicitly supplied sources.
 3. It prunes common dependency/build directories such as `node_modules`, `.git`, `.next`, `dist`, and `build`.
-4. It computes routing metadata from skill names and descriptions.
-5. Exact same-name skills are always retained as candidates.
-6. For larger skill sets, obviously unrelated pairs are routed out before semantic review.
-7. The host agent reads the selected skills and applies the classification protocol in `SKILL.md`.
-8. Findings include evidence from both skills and remain advisory.
+4. For small skill sets, every possible pair is preserved for semantic review.
+5. For larger skill sets, metadata is used to route out obviously unrelated pairs.
+6. The host agent reads the selected skills and applies the classification protocol in `SKILL.md`.
+7. Findings include evidence from both skills and remain advisory.
 
 **Python routes. Your existing agent judges. SpaghettiSkills reports.**
 
@@ -149,8 +167,8 @@ The goal is not to maximize routing reduction at any cost. The important metric 
 
 We therefore evaluate routing against known fixtures and real-world skill sets using two measurements:
 
-- **routing reduction** — how many theoretical pairs avoid semantic review;
-- **collision recall** — how many known collisions survive routing and reach semantic review.
+- **routing reduction**: how many theoretical pairs avoid semantic review;
+- **collision recall**: how many known collisions survive routing and reach semantic review.
 
 No performance percentage should be treated as a project-wide claim until it is backed by a reproducible benchmark in this repository.
 
@@ -217,13 +235,13 @@ Run the test suite with:
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover the deterministic layer: parsing, discovery behavior, ignored directories, candidate routing, same-name retention, and routing metrics.
+Tests cover the deterministic layer: parsing, discovery behavior, ignored directories, candidate routing, small-set exhaustive comparison, and routing metrics.
 
 ## Limitations
 
 SpaghettiSkills intentionally has a narrow scope.
 
-- Metadata routing is heuristic and can theoretically produce false negatives. This is why collision recall must be benchmarked.
+- Metadata routing for larger skill sets is heuristic and can theoretically produce false negatives. This is why collision recall must be benchmarked.
 - Final semantic classification depends on the capabilities and behavior of the host model.
 - A relationship can depend on task context; two skills may be compatible in one situation and conflict in another.
 - The lightweight frontmatter parser supports the metadata shapes needed by common Agent Skills, but it is not a general-purpose YAML parser.
@@ -244,7 +262,7 @@ spaghetti-skills/
     └── HOW_IT_WORKS.md    # architecture notes
 ```
 
-`scan.py` intentionally remains a single small module while discovery, parsing, routing, and reporting are still tightly coupled and easy to understand in one place. It should be split only when those responsibilities develop independent complexity or reuse—not to create architecture for its own sake.
+`scan.py` intentionally remains a single small module while discovery, parsing, routing, and reporting are still tightly coupled and easy to understand in one place. It should be split only when those responsibilities develop independent complexity or reuse, not to create architecture for its own sake.
 
 ## Status
 
