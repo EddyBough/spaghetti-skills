@@ -13,6 +13,76 @@ It does **not** modify, delete, disable, rewrite, or move any skill. It only rea
 - `CONFLICT` — two skills can apply to the same situation but give incompatible instructions.
 - `COMPATIBLE` — related skills that can coexist without meaningful interference.
 
+## Installation
+
+SpaghettiSkills is designed to be installed like any other Agent Skill.
+
+Clone or copy this repository into a skill directory supported by your coding agent. The repository contains its own `SKILL.md` and local Python scanner.
+
+No Python package, API key, background service, or global dependency is required.
+
+> Installation paths differ between coding agents. SpaghettiSkills intentionally does not modify your global harness or install itself automatically.
+
+## Usage
+
+From a coding agent that supports Agent Skills, ask it to audit your installed skills with SpaghettiSkills.
+
+For example:
+
+```text
+Use SpaghettiSkills to audit my installed skills.
+```
+
+or:
+
+```text
+Check whether my installed skills duplicate, overlap, or conflict with each other.
+```
+
+The agent loads SpaghettiSkills, runs the bundled read-only Python scanner, reads the candidate `SKILL.md` pairs, and returns a report.
+
+Example output:
+
+```text
+🍝 SpaghettiSkills
+
+12 skills found
+
+1 CONFLICT
+2 OVERLAPS
+1 DUPLICATE
+
+CONFLICT
+react-performance ↔ dashboard-ui
+
+Shared scope:
+React dashboard rendering
+
+Evidence A:
+"Prefer Server Components whenever possible."
+
+Evidence B:
+"Dashboard pages should default to Client Components."
+
+Why:
+Both skills may govern the same task while recommending opposing defaults.
+
+Recommendation:
+Review the scope of one of the skills. No files were changed.
+```
+
+### Run the scanner directly
+
+The bundled scanner can also be run manually for debugging or development:
+
+```bash
+python3 scripts/scan.py --root . --json
+```
+
+The scanner does **not** decide whether two skills truly conflict. It only discovers skills and selects candidate pairs. The user's existing coding agent performs the semantic comparison according to the rules in `SKILL.md`.
+
+**Python filters. Your existing agent judges. SpaghettiSkills reports.**
+
 ## How it works
 
 SpaghettiSkills deliberately separates deterministic work from semantic judgment:
@@ -22,8 +92,6 @@ SpaghettiSkills deliberately separates deterministic work from semantic judgment
 3. The user's existing coding agent reads the full candidate skill pair.
 4. The agent classifies the relationship using SpaghettiSkills' strict audit protocol.
 5. The result is shown as a read-only terminal report with evidence.
-
-**Python filters. Your existing agent judges. SpaghettiSkills reports.**
 
 No model API key is required by SpaghettiSkills itself.
 
