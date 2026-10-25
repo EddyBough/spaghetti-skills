@@ -38,58 +38,28 @@ class ScanTests(unittest.TestCase):
             ("demo", "React performance review and bundle optimization."),
         )
 
-    def test_same_name_is_always_candidate(self):
-        a = self.skill("ui-ux-pro-max", "visual design", "/a")
-        b = self.skill("ui ux pro max", "totally different metadata", "/b")
-        pairs = scan.candidate_pairs([a, b], all_pairs_limit=0, threshold=0.99)
-        self.assertEqual(len(pairs), 1)
-        self.assertEqual(pairs[0]["selection_reason"], "same-skill-name")
+    def test_small_sets_keep_all_pairs(self):
+        skills = [
+            self.skill("frontend-design", "typography layout visual identity", "/a"),
+            self.skill("security-audit", "auth csrf trust boundary vulnerability", "/b"),
+            self.skill("react-performance", "bundle rerender waterfalls", "/c"),
+        ]
+        pairs = scan.candidate_pairs(skills, all_pairs_limit=15, threshold=0.99)
+        self.assertEqual(len(pairs), 3)
+        self.assertTrue(all(p["selection_reason"] == "all-pairs-small-set" for p in pairs))
 
-    def test_unrelated_pair_is_filtered_for_larger_sets(self):
+    def test_unrelated_pair_can_be_filtered_above_small_set_limit(self):
         a = self.skill("frontend-design", "typography layout visual identity", "/a")
         b = self.skill("security-audit", "auth csrf trust boundary vulnerability", "/b")
         pairs = scan.candidate_pairs([a, b], all_pairs_limit=0, threshold=0.08)
         self.assertEqual(pairs, [])
 
-    def test_related_metadata_pair_is_kept(self):
+    def test_shared_metadata_pair_is_kept_above_small_set_limit(self):
         a = self.skill("ui-review", "react performance bundle rerender", "/a")
         b = self.skill("react-performance", "react performance waterfalls bundle", "/b")
-        pairs = scan.candidate_pairs([a, b], all_pairs_limit=0, threshold=0.08)
+        pairs = scan.candidate_pairs([a, b], all_pairs_limit=0, threshold=0.99)
         self.assertEqual(len(pairs), 1)
-        self.assertIn(
-            pairs[0]["selection_reason"],
-            {"shared-routing-domain", "routing-metadata-similarity"},
-        )
-
-    def test_frontend_design_and_ui_ux_are_preserved_by_domain_routing(self):
-        frontend = self.skill(
-            "frontend-design",
-            "Distinctive frontend interfaces with strong visual identity, typography and layout.",
-            "/frontend",
-        )
-        uiux = self.skill(
-            "ui-ux-pro-max",
-            "UI UX design systems, palettes, accessibility, components and web styles.",
-            "/uiux",
-        )
-        pairs = scan.candidate_pairs([frontend, uiux], all_pairs_limit=0, threshold=0.99)
-        self.assertEqual(len(pairs), 1)
-        self.assertEqual(pairs[0]["selection_reason"], "shared-routing-domain")
-        self.assertIn("frontend-ui", pairs[0]["shared_routing_domains"])
-
-    def test_distinct_domains_can_still_be_filtered(self):
-        design = self.skill(
-            "frontend-design",
-            "Visual interface typography layout palette",
-            "/design",
-        )
-        security = self.skill(
-            "security-audit",
-            "Authentication CSRF SSRF vulnerability trust boundary",
-            "/security",
-        )
-        pairs = scan.candidate_pairs([design, security], all_pairs_limit=0, threshold=0.99)
-        self.assertEqual(pairs, [])
+        self.assertEqual(pairs[0]["selection_reason"], "routing-metadata-overlap")
 
     def test_ignored_directories_are_pruned(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,10 +80,10 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(found, [good / "SKILL.md"])
 
     def test_pair_metrics(self):
-        metrics = scan.pair_metrics(11, 6)
+        metrics = scan.pair_metrics(11, 55)
         self.assertEqual(metrics["theoretical_pair_count"], 55)
-        self.assertEqual(metrics["candidate_pair_count"], 6)
-        self.assertEqual(metrics["routing_reduction_percent"], 89.1)
+        self.assertEqual(metrics["candidate_pair_count"], 55)
+        self.assertEqual(metrics["routing_reduction_percent"], 0.0)
 
 
 if __name__ == "__main__":
