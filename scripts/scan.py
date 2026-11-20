@@ -126,7 +126,9 @@ def iter_skill_files(root: Path) -> Iterator[Path]:
             yield Path(current) / "SKILL.md"
 
 
-def discover_in(root: Path, source: str, excluded: set[str]) -> list[Skill]:
+def discover_in(
+    root: Path, source: str, excluded: set[str], warnings: list[dict] | None = None
+) -> list[Skill]:
     skills: list[Skill] = []
     if not root.exists():
         return skills
@@ -137,7 +139,9 @@ def discover_in(root: Path, source: str, excluded: set[str]) -> list[Skill]:
             if resolved in excluded:
                 continue
             text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except (UnicodeDecodeError, OSError) as exc:
+            if warnings is not None:
+                warnings.append({"path": str(path), "error": type(exc).__name__})
             continue
 
         name, description = parse_frontmatter(text)
@@ -156,10 +160,12 @@ def discover_in(root: Path, source: str, excluded: set[str]) -> list[Skill]:
     return skills
 
 
-def discover(roots: list[tuple[str, Path]], excluded: set[str]) -> list[Skill]:
+def discover(
+    roots: list[tuple[str, Path]], excluded: set[str], warnings: list[dict] | None = None
+) -> list[Skill]:
     by_path: dict[str, Skill] = {}
     for source, root in roots:
-        for skill in discover_in(root, source, excluded):
+        for skill in discover_in(root, source, excluded, warnings):
             by_path.setdefault(skill.path, skill)
     return sorted(by_path.values(), key=lambda s: (s.name.lower(), s.path))
 
@@ -173,18 +179,33 @@ def similarity(a: Skill, b: Skill) -> float:
     return intersection / union if union else 0.0
 
 
-def candidate_pairs(skills: list[Skill], all_pairs_limit: int, threshold: float) -> list[dict]:
-    pairs: list[dict] = []
-    keep_all = len(skills) <= all_pairs_limit
+def normalized_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
+
+def candidate_pairs(
+    skills: list[Skill], mode: str = "exhaustive", threshold: float = 0.08
+) -> list[dict]:
+    """Select pairs only. Filtered mode is opt-in and can miss real collisions."""
+    if mode not in {"exhaustive", "filtered"}:
+        raise ValueError(f"Unsupported routing mode: {mode}")
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be between 0 and 1")
+
+    pairs: list[dict] = []
     for a, b in itertools.combinations(skills, 2):
         shared = sorted(set(a.terms) & set(b.terms))
         score = similarity(a, b)
 
-        if keep_all:
-            reason = "all-pairs-small-set"
-        elif shared or score >= threshold:
-            reason = "routing-metadata-overlap"
+        if mode == "exhaustive":
+            reason = "exhaustive"
+        elif normalized_name(a.name) == normalized_name(b.name):
+            reason = "same-name"
+        elif not a.description.strip() or not b.description.strip():
+            # Missing metadata is uncertainty, not evidence of compatibility.
+            reason = "missing-description-fallback"
+        elif score >= threshold:
+            reason = "metadata-similarity"
         else:
             continue
 
@@ -200,6 +221,13 @@ def candidate_pairs(skills: list[Skill], all_pairs_limit: int, threshold: float)
             "selection_reason": reason,
         })
     return pairs
+
+
+def page_pairs(pairs: list[dict], offset: int = 0, limit: int | None = None) -> list[dict]:
+    """Return a deterministic page without marking other candidates compatible."""
+    if offset < 0 or (limit is not None and limit <= 0):
+        raise ValueError("offset must be non-negative and limit must be positive")
+    return pairs[offset:] if limit is None else pairs[offset:offset + limit]
 
 
 def pair_metrics(skill_count: int, candidate_count: int) -> dict[str, float | int]:
@@ -218,32 +246,50 @@ def main() -> None:
     parser.add_argument("--source", action="append", default=[], help="Additional skill directory to scan; repeatable")
     parser.add_argument("--no-global", action="store_true", help="Do not scan known global skill directories")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    parser.add_argument("--all-pairs-limit", type=int, default=15, help="Keep all pairs when <= N skills")
+    parser.add_argument("--mode", choices=("exhaustive", "filtered"), default="exhaustive", help="Exhaustive by default; filtered is experimental and can miss collisions")
+    parser.add_argument("--pair-offset", type=int, default=0, help="First candidate pair to emit (default: 0)")
+    parser.add_argument("--pair-limit", type=int, default=100, help="Maximum pairs per output page (default: 100)")
     parser.add_argument("--threshold", type=float, default=0.08, help="Metadata Jaccard threshold for larger sets")
     args = parser.parse_args()
+    if not 0 <= args.threshold <= 1:
+        parser.error("--threshold must be between 0 and 1")
+    if args.pair_offset < 0 or (args.pair_limit is not None and args.pair_limit <= 0):
+        parser.error("--pair-offset must be >= 0 and --pair-limit must be > 0")
 
     project_root = Path(args.root).expanduser().resolve()
+    if not project_root.is_dir():
+        parser.error(f"Project directory not found: {project_root}")
     roots = source_roots(project_root, args.source, include_global=not args.no_global)
 
     self_skill = Path(__file__).resolve().parent.parent / "SKILL.md"
     excluded = {str(self_skill.resolve())}
 
-    skills = discover(roots, excluded)
-    pairs = candidate_pairs(skills, args.all_pairs_limit, args.threshold)
+    warnings: list[dict] = []
+    skills = discover(roots, excluded, warnings)
+    pairs = candidate_pairs(skills, mode=args.mode, threshold=args.threshold)
+    emitted = page_pairs(pairs, args.pair_offset, args.pair_limit)
     metrics = pair_metrics(len(skills), len(pairs))
-    paths_to_read = sorted({p["path_a"] for p in pairs} | {p["path_b"] for p in pairs})
+    paths_to_read = sorted({p["path_a"] for p in emitted} | {p["path_b"] for p in emitted})
 
     result = {
         "project_root": str(project_root),
         "read_only": True,
+        "routing_mode": args.mode,
+        "routing_exhaustive": args.mode == "exhaustive",
+        "discovery_warnings": warnings,
+        "scope_note": "Discovered files are not proof that two skills activate together in a specific host.",
         "sources_scanned": [{"label": label, "path": str(path)} for label, path in roots],
         "skills_found": len(skills),
         "skills": [asdict(s) for s in skills],
         **metrics,
+        "pairs_routed_out": metrics["theoretical_pair_count"] - len(pairs),
+        "pair_offset": args.pair_offset,
+        "emitted_pair_count": len(emitted),
+        "remaining_pair_count": max(0, len(pairs) - args.pair_offset - len(emitted)),
         "skills_requiring_semantic_read": len(paths_to_read),
         "semantic_read_paths": paths_to_read,
-        "candidate_pairs": pairs,
-        "note": "For small skill sets, all pairs are preserved for semantic review. Read each selected skill once, then classify candidate pairs using SKILL.md.",
+        "candidate_pairs": emitted,
+        "note": "Scanner output is not a semantic verdict. Review every candidate page. Never count filtered-out or unreviewed pairs as COMPATIBLE.",
     }
 
     if args.json:
@@ -254,7 +300,10 @@ def main() -> None:
             f"{len(skills)} skills, {len(pairs)}/{metrics['theoretical_pair_count']} candidate pairs "
             f"({metrics['routing_reduction_percent']}% routed out)"
         )
-        for p in pairs:
+        print(f"Mode: {args.mode}. Emitted {len(emitted)}; remaining {result['remaining_pair_count']}.")
+        if warnings:
+            print(f"Warning: {len(warnings)} unreadable skill file(s).")
+        for p in emitted:
             shared = ", ".join(p["shared_terms"][:6]) or p["selection_reason"]
             print(f"- {p['skill_a']} ↔ {p['skill_b']}  [{shared}]")
 

@@ -2,7 +2,7 @@
 
 **Find AI agent skills that duplicate, overlap, or conflict before they turn your agent into spaghetti.**
 
-SpaghettiSkills is a read-only Agent Skill auditor for coding agents such as Cursor and Codex. It discovers the skills available to a project, preserves exhaustive comparison for small skill sets, routes plausible collisions for larger sets, and asks the host agent to classify each relationship as `DUPLICATE`, `OVERLAP`, `CONFLICT`, or `COMPATIBLE`.
+SpaghettiSkills is a read-only Agent Skill auditor for coding agents such as Cursor and Codex. It discovers the skills available to a project, uses exhaustive pair selection by default and supports explicitly enabled experimental metadata filtering, and asks the host agent to classify each relationship as `DUPLICATE`, `OVERLAP`, `CONFLICT`, or `COMPATIBLE`.
 
 No separate model API key. No background service. No automatic mutation of your harness.
 
@@ -129,10 +129,11 @@ The implementation deliberately separates cheap deterministic work from expensiv
 1. `scripts/scan.py` discovers `SKILL.md` files.
 2. It merges project-local, known global, and explicitly supplied sources.
 3. It prunes common dependency/build directories such as `node_modules`, `.git`, `.next`, `dist`, and `build`.
-4. For small skill sets, every possible pair is preserved for semantic review.
-5. For larger skill sets, metadata is used to route out obviously unrelated pairs.
-6. The host agent reads the selected skills and applies the classification protocol in `SKILL.md`.
+4. Every possible pair is retained by default, regardless of the number of skills.
+5. Results are paginated in batches of 100 pairs to avoid one oversized scanner output.
+6. The host agent examines each page, reads selected skills, and applies `SKILL.md`.
 7. Findings include evidence from both skills and remain advisory.
+8. Optional `--mode filtered` uses metadata similarity, but is experimental and can miss collisions.
 
 **Python routes. Your existing agent judges. SpaghettiSkills reports.**
 
@@ -155,9 +156,9 @@ Examples:
 | 50 | 1,225 |
 | 100 | 4,950 |
 
-SpaghettiSkills still **discovers every skill**. Routing only reduces which relationships require expensive semantic review; it is not a limit on the number of supported skills.
+By default, SpaghettiSkills keeps **every pair**. This avoids false negatives caused by discarding pairs before semantic analysis, but it does not prevent mistakes made by the LLM. Large audits are expensive and may require many batches; the tool must report incomplete audits rather than silently truncating results.
 
-The scanner exposes both `theoretical_pair_count` and `candidate_pair_count`, plus `routing_reduction_percent`, so this tradeoff is measurable rather than hidden.
+`--mode filtered` is available for experimentation only and must be selected explicitly. Its recall has not been validated on independent corpora. The scanner exposes `theoretical_pair_count`, `candidate_pair_count`, `routing_reduction_percent`, and pagination counts to make this tradeoff explicit.
 
 ## Benchmark philosophy
 
@@ -223,7 +224,21 @@ Project-only scan:
 python3 scripts/scan.py --root . --no-global --json
 ```
 
-The scanner performs discovery and routing only. It does **not** make the final semantic classification.
+The scanner performs discovery and candidate selection only. It does **not** make the final semantic classification.
+
+Exhaustive mode is the default. For larger sets, request additional pages:
+
+```bash
+python3 scripts/scan.py --root . --pair-offset 100 --pair-limit 100 --json
+```
+
+Experimental metadata filtering (not a certified recall guarantee):
+
+```bash
+python3 scripts/scan.py --root . --mode filtered --json
+```
+
+`candidate_pair_count` is the count across all pages, while `emitted_pair_count` counts only the current page. Pairs that have not been semantically reviewed are **not** classified as `COMPATIBLE`. A skill file found on disk also is not proof that it is active in the current host; co-availability must be assessed separately.
 
 ## Tests
 
@@ -235,17 +250,19 @@ Run the test suite with:
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover the deterministic layer: parsing, discovery behavior, ignored directories, candidate routing, small-set exhaustive comparison, and routing metrics.
+Tests cover the deterministic layer: metadata parsing, discovery failures, ignored directories, exhaustive coverage above 15 skills, opt-in filtering, threshold behavior, pagination, and routing metrics. GitHub Actions runs the test suite on Python 3.10 through 3.13.
 
 ## Limitations
 
 SpaghettiSkills intentionally has a narrow scope.
 
-- Metadata routing for larger skill sets is heuristic and can theoretically produce false negatives. This is why collision recall must be benchmarked.
+- Experimental metadata routing is heuristic and can produce false negatives. Its collision recall has not yet been established by a benchmark.
 - Final semantic classification depends on the capabilities and behavior of the host model.
 - A relationship can depend on task context; two skills may be compatible in one situation and conflict in another.
 - The lightweight frontmatter parser supports the metadata shapes needed by common Agent Skills, but it is not a general-purpose YAML parser.
-- SpaghettiSkills audits **Agent Skills only**. It does not currently audit hooks, MCP servers, `AGENTS.md`, `CLAUDE.md`, IDE rules, or the rest of the agent harness.
+- Discovered skill files may belong to different hosts. Their mere presence does not prove co-activation or a runtime conflict.
+- A completed candidate scan is not automatically a completed semantic audit. Large reviews may need multiple batches, and any unreviewed pairs must be disclosed.
+- SpaghettiSkills audits **Agent Skills only**. It does not audit hooks, MCP servers, `AGENTS.md`, `CLAUDE.md`, IDE rules, or the rest of the agent harness.
 
 These are deliberate boundaries, not hidden guarantees.
 
@@ -266,7 +283,7 @@ spaghetti-skills/
 
 ## Status
 
-Early development / benchmark phase.
+Early development / benchmark phase. Deterministic unit tests are in CI; semantic benchmark accuracy and generalization have not yet been established.
 
 The current goal is intentionally narrow: **detect collisions between Agent Skills accurately, cheaply, and without modifying the harness.**
 
