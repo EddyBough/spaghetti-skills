@@ -248,7 +248,7 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     parser.add_argument("--mode", choices=("exhaustive", "filtered"), default="exhaustive", help="Exhaustive by default; filtered is experimental and can miss collisions")
     parser.add_argument("--pair-offset", type=int, default=0, help="First candidate pair to emit (default: 0)")
-    parser.add_argument("--pair-limit", type=int, default=None, help="Maximum pairs per output page")
+    parser.add_argument("--pair-limit", type=int, default=100, help="Maximum pairs per output page (default: 100)")
     parser.add_argument("--threshold", type=float, default=0.08, help="Metadata Jaccard threshold for larger sets")
     args = parser.parse_args()
     if not 0 <= args.threshold <= 1:
